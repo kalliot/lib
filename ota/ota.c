@@ -109,7 +109,6 @@ static void insert_queue(int bytes)
 static void ota_task(void *pvParameter)
 {
     char *fname = (char *) pvParameter;
-    int bytesReceived = 0;
 
     ESP_LOGI(TAG, "Starting OTA, file=[%s]", fname);
 
@@ -155,25 +154,22 @@ static void ota_task(void *pvParameter)
         goto ota_end;
     }
 
-    
-    int lastSendInfoBytes = 0;
+    int len = 0;
+    int prevLen = 0;
     while (1) 
     {
         err = esp_https_ota_perform(https_ota_handle);
         if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
             break;
         }
-        int len = esp_https_ota_get_image_len_read(https_ota_handle);
-        bytesReceived += len;
-        // don't send count from each packet, just after 100kb has been added.
-        if (bytesReceived > lastSendInfoBytes + 1000 * 1024) 
+        len = esp_https_ota_get_image_len_read(https_ota_handle);
+        if (len - prevLen >= 10240)
         {
-            insert_queue(bytesReceived);
-            lastSendInfoBytes = bytesReceived;
+            insert_queue(len);
+            prevLen = len;
         }    
     }
-
-    insert_queue(bytesReceived);
+    insert_queue(len);
 
     if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) 
     {
@@ -228,7 +224,7 @@ void ota_status_publish(struct measurement *data, esp_mqtt_client_handle_t clien
 }
 
 
-char *ota_init(char *prefix, char *myname, uint8_t *chip)
+char *ota_init(char *prefix, const char *myname, uint8_t *chip)
 {
     chipid = chip;
     sprintf(topic,"%s/%s/%x%x%x/otaupdate", prefix, myname, chipid[3], chipid[4], chipid[5]);
@@ -274,10 +270,6 @@ void ota_cancel_rollback(void)
             } else {
                 ESP_LOGE(TAG, "Failed to cancel rollback");
             }
-        }
-        else
-        {
-            printf("No pending OTA verifications.\n");
         }
     }
 }
