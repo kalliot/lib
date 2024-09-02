@@ -15,6 +15,7 @@
 
 
 #include "homeapp.h"
+#include "statistics/statistics.h"
 #include "driver/gpio.h"
 #include "ota.h"
 
@@ -220,6 +221,7 @@ void ota_status_publish(struct measurement *data, esp_mqtt_client_handle_t clien
                 data->data.count,
                 now);
     esp_mqtt_client_publish(client, topic, jsondata , 0, 0, 0);
+    statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
 }
 

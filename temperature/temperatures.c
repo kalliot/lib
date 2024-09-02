@@ -14,6 +14,7 @@
 #include "esp_log.h"
 
 #include "homeapp.h"
+#include "statistics/statistics.h"
 #include "driver/gpio.h"
 #include "ds18b20.h"
 #include "mqtt_client.h"
@@ -117,7 +118,7 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
                 data->data.temperature,
                 now);
     esp_mqtt_client_publish(client, temperatureTopic, jsondata , 0, 0, retain);
-    sendcnt++;
+    statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
 }
@@ -213,7 +214,7 @@ static void temp_reader(void* arg)
             if (temperature < -10.0 || temperature > 85.0 || (sensors[i].prev !=0 && diff > 20.0))
             {
                 ESP_LOGI(TAG,"BAD reading from ds18b20 index %d, value %f", i, temperature);
-                sensorerrors++;
+                statistics_getptr()->sensorerrors++;
             }
             else
             {
