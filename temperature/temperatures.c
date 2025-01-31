@@ -35,9 +35,11 @@ static const char *TAG = "TEMPERATURE";
 static struct oneWireSensor {
     float prev;
     float lastValid;
+    time_t lastValidTs;
     time_t prevsend;
     char sensorname[SENSOR_NAMELEN];
     char friendlyName[FRIENDLY_NAMELEN];
+    int err;
     DeviceAddress addr;
 } *sensors;            
 
@@ -108,7 +110,7 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
         retain = 0;
     }
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"%s\",\"friendlyname\":\"%s\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
+    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"%s\",\"name\":\"%s\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"err\":%d}";
     sprintf(temperatureTopic,"%s/%s/%x%x%x/parameters/temperature/%s", prefix, myName, chipid[3], chipid[4], chipid[5], sensors[data->gpio].sensorname);
 
     sprintf(jsondata, datafmt,
@@ -116,7 +118,8 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
                 sensors[data->gpio].sensorname,
                 sensors[data->gpio].friendlyName,
                 data->data.temperature,
-                now);
+                now,
+                sensors[data->gpio].err);
     esp_mqtt_client_publish(client, temperatureTopic, jsondata , 0, 0, retain);
     statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
@@ -140,12 +143,14 @@ static void getFirstTemperatures()
             }
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             temperature = ds18b20_getTempC((DeviceAddress *) sensors[i].addr);
-            if (temperature < -30.0 || temperature > 85.0) {
+            if (temperature < -30.0 || temperature > 95.0) {
                 ESP_LOGI(TAG,"%s failed with initial value %f, reading again", sensors[i].sensorname, temperature);
             }
             else {
+                time(&sensors[i].lastValidTs);
                 sensors[i].lastValid = temperature;
                 sensors[i].prev = temperature;
+                sensors[i].err = 0;
                 success_cnt++;
             }
         }
@@ -211,7 +216,7 @@ static void temp_reader(void* arg)
             temperature = ds18b20_getTempC((DeviceAddress *) sensors[i].addr);
             float diff = fabs(sensors[i].prev - temperature);
 
-            if (temperature < -10.0 || temperature > 85.0 || (sensors[i].prev !=0 && diff > 20.0))
+            if (temperature < -30.0 || temperature > 95.0 || (sensors[i].prev !=0 && diff > 20.0))
             {
                 ESP_LOGI(TAG,"BAD reading from ds18b20 index %d, value %f", i, temperature);
                 statistics_getptr()->sensorerrors++;
@@ -219,20 +224,28 @@ static void temp_reader(void* arg)
             else
             {
                 sensors[i].lastValid = temperature;
+                time(&sensors[i].lastValidTs);
                 if ((diff) >= 0.10)
                 {
                     sendMeasurement(i, temperature);
                     sensors[i].prev = temperature;
                     sensors[i].prevsend = now;
+                    sensors[i].err = 0;
                 }
             }
             // Difference was not big enough.
             // Send because of timeout
             if ((now - sensors[i].prevsend) > NO_CHANGE_INTERVAL)
             {
+                int err = 0;
+                if ((now - sensors[i].lastValidTs) >= NO_CHANGE_INTERVAL)
+                {
+                    err = 1;
+                }
                 sendMeasurement(i, sensors[i].lastValid);
                 sensors[i].prev = sensors[i].lastValid;
                 sensors[i].prevsend = now;
+                sensors[i].err = err;
             }
         }
         vTaskDelay(10 * 1000 / portTICK_PERIOD_MS);
