@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "ota.h"
 
+#define ERRTXT_LEN 80
 
 static char topic[64];
 static uint8_t *chipid;
@@ -27,6 +28,7 @@ static bool evtHandlerRegistered = false;
 static const char *TAG = "ota_updater";
 static char *otaPath;
 static esp_app_desc_t running_app_info;
+static char errText[ERRTXT_LEN];
 
 
 extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
@@ -96,11 +98,12 @@ static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
 }
 
 
-static void insert_queue(int bytes)
+static void insert_queue(int bytes, int err)
 {
     struct measurement meas;
     meas.id = OTA;
     meas.gpio = 0;
+    meas.err = err;
     meas.data.count = bytes;
     xQueueSend(evt_queue, &meas, 0);
     if (bytes == 0) otaIsActive = false;
@@ -137,7 +140,7 @@ static void ota_task(void *pvParameter)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed err=%d", err);
         if (otaPath != NULL) free(otaPath);
-        insert_queue(0);
+        insert_queue(0, err);
         vTaskDelete(NULL);
     }
 
@@ -166,11 +169,11 @@ static void ota_task(void *pvParameter)
         len = esp_https_ota_get_image_len_read(https_ota_handle);
         if (len - prevLen >= 10240)
         {
-            insert_queue(len);
+            insert_queue(len,err);
             prevLen = len;
         }    
     }
-    insert_queue(len);
+    insert_queue(len, err);
 
     if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) 
     {
@@ -182,7 +185,7 @@ static void ota_task(void *pvParameter)
         ota_finish_err = esp_https_ota_finish(https_ota_handle);
         if ((err == ESP_OK) && (ota_finish_err == ESP_OK)) {
             ESP_LOGI(TAG, "ESP_HTTPS_OTA upgrade successful. Rebooting ...");
-            insert_queue(0); // done, no more data.
+            insert_queue(0, err); // done, no more data.
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             esp_restart();
         } 
@@ -199,7 +202,7 @@ static void ota_task(void *pvParameter)
     }
 
 ota_end:
-    insert_queue(0); // done, no more data.
+    insert_queue(0, err); // done with error, no more data.
     esp_https_ota_abort(https_ota_handle);
     ESP_LOGE(TAG, "ESP_HTTPS_OTA upgrade failed");
     if (otaPath != NULL) free(otaPath);
@@ -215,11 +218,13 @@ void ota_status_publish(struct measurement *data, esp_mqtt_client_handle_t clien
     time(&now);
     gpio_set_level(BLINK_GPIO, true);
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"otastatus\",\"value\":%d,\"ts\":%jd}";
+    static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"otastatus\",\"value\":%d,\"ts\":%jd, \"err\":\"%s\"}";
+    esp_err_to_name_r(data->err, errText, ERRTXT_LEN);
     sprintf(jsondata, datafmt,
                 chipid[3], chipid[4], chipid[5],
                 data->data.count,
-                now);
+                now,
+                errText);
     esp_mqtt_client_publish(client, topic, jsondata , 0, 0, 0);
     statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
